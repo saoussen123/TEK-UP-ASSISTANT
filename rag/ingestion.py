@@ -1,9 +1,3 @@
-"""
-rag/ingestion.py
-Robust ingestion pipeline (PDF / DOCX / TXT)
-Fixed for better PDF extraction (PyMuPDF instead of PyPDFLoader)
-Handles empty files, scanned PDFs fallback warning, and safe chunking.
-"""
 
 import os
 from pathlib import Path
@@ -12,7 +6,7 @@ from typing import List
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import (
-    PyMuPDFLoader,   # ✅ FIXED (better than PyPDFLoader)
+    PyMuPDFLoader,
     Docx2txtLoader,
     TextLoader,
 )
@@ -27,15 +21,15 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 50))
 DATA_DIR = Path("data/cours")
 
 SUPPORTED = {
-    ".pdf": PyMuPDFLoader,   # ✅ FIXED HERE
+    ".pdf": PyMuPDFLoader,   # ONLY text-based PDFs
     ".docx": Docx2txtLoader,
     ".txt": TextLoader,
 }
 
 
-# ─────────────────────────────────────────────────────────────
-# LOAD FILES
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# LOAD DOCUMENTS
+# ─────────────────────────────────────────────
 def load_documents(directory: str | Path) -> List[Document]:
     directory = Path(directory)
     docs: List[Document] = []
@@ -54,9 +48,9 @@ def load_documents(directory: str | Path) -> List[Document]:
             loader = SUPPORTED[suffix](str(filepath))
             loaded_docs = loader.load()
 
-            # ⚠ if still empty → likely scanned PDF
+            # ❌ skip empty PDFs (likely scanned)
             if not loaded_docs:
-                print(f"⚠ EMPTY FILE (maybe scanned PDF): {filepath.name}")
+                print(f"⚠ Skipped (no text found): {filepath.name}")
                 continue
 
             cleaned = []
@@ -73,7 +67,7 @@ def load_documents(directory: str | Path) -> List[Document]:
 
             if cleaned:
                 docs.extend(cleaned)
-                print(f"✔ Loaded: {filepath.name} ({len(cleaned)} pages)")
+                print(f"✔ Loaded: {filepath.name} ({len(cleaned)})")
 
         except Exception as e:
             print(f"✘ Error loading {filepath.name}: {e}")
@@ -82,12 +76,12 @@ def load_documents(directory: str | Path) -> List[Document]:
     return docs
 
 
-# ─────────────────────────────────────────────────────────────
-# SPLIT INTO CHUNKS
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# SPLIT
+# ─────────────────────────────────────────────
 def split_documents(docs: List[Document]) -> List[Document]:
     if not docs:
-        print("⚠ No documents found for splitting")
+        print("⚠ No documents found")
         return []
 
     splitter = RecursiveCharacterTextSplitter(
@@ -102,23 +96,19 @@ def split_documents(docs: List[Document]) -> List[Document]:
     return chunks
 
 
-# ─────────────────────────────────────────────────────────────
-# MAIN PIPELINE
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
 def ingest(directory: str | Path = DATA_DIR) -> List[Document]:
-    print(f"\n🚀 Ingestion started: {directory}")
+    print(f"\n🚀 Ingestion started (TEXT PDFs ONLY): {directory}")
 
     docs = load_documents(directory)
 
     if not docs:
-        print("❌ No readable documents found (likely scanned PDFs → need OCR)")
+        print("❌ No readable text-based PDFs found")
         return []
 
     chunks = split_documents(docs)
 
-    if not chunks:
-        print("❌ No chunks created from documents")
-        return []
-
-    print(f"✅ Ingestion complete → {len(chunks)} chunks")
+    print(f"✅ Done → {len(chunks)} chunks")
     return chunks

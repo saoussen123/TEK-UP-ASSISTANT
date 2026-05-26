@@ -11,37 +11,46 @@ QUESTION_GENERATOR_PROMPT = PromptTemplate(
     input_variables=["context", "num_questions", "difficulty", "domain", "question_type"],
     template="""You are an expert exam creator for TEK-UP certification courses.
 
-Based ONLY on the course material below, generate {num_questions} {question_type} questions.
-Difficulty level: {difficulty}
-Domain / Certification: {domain}
+Your ONLY job is to generate questions based STRICTLY on the course content below.
 
-COURSE MATERIAL:
+COURSE CONTENT:
 {context}
 
-INSTRUCTIONS:
-- Each question must be directly based on the provided course material.
-- For MCQ: provide 4 answer choices (A, B, C, D), mark the correct one.
-- For True/False: state the answer clearly.
-- For open questions: provide a model answer.
-- Always cite which source passage supports the answer.
-- Format your output as valid JSON like this:
+TASK: Generate {num_questions} {question_type} questions.
+Difficulty: {difficulty}
+Domain: {domain}
+
+STRICT RULES — YOU MUST FOLLOW THESE:
+1. Read the course content carefully and generate questions about the TECHNICAL CONCEPTS inside it.
+2. Focus on: services, features, definitions, architectures, use cases, comparisons, best practices.
+3. NEVER generate questions about: exam price, exam duration, exam format, course structure, or administrative info.
+4. NEVER generate generic questions that don't come directly from the course content.
+5. Each question must test understanding of a specific technical concept from the text above.
+6. For MCQ: provide exactly 4 options as a JSON LIST called "options". The "correct_answer" must be the EXACT full text of the correct option.
+7. For True/False: "options" must be ["True", "False"].
+8. For Open: omit "options", provide a full model answer.
+
+REQUIRED JSON FORMAT — respond ONLY with this, no extra text:
 
 {{
   "questions": [
     {{
       "id": 1,
       "type": "{question_type}",
-      "question": "...",
-      "choices": {{"A": "...", "B": "...", "C": "...", "D": "..."}},
-      "correct_answer": "A",
-      "explanation": "...",
-      "source_hint": "brief quote from the course material"
+      "question": "Technical question directly based on the course content above",
+      "options": ["option A text", "option B text", "option C text", "option D text"],
+      "correct_answer": "option A text",
+      "explanation": "Explanation referencing the specific course content",
+      "source_hint": "Brief quote from the course material that supports this answer"
     }}
   ]
 }}
 
-For True/False or open questions, omit the "choices" field.
-Respond ONLY with the JSON object. No extra text.
+CRITICAL: 
+- "options" is always a flat LIST of strings, never a dict.
+- "correct_answer" must be the EXACT same string as one of the options.
+- Questions must be about TECHNICAL CONTENT, not about the exam or course itself.
+- Respond ONLY with the JSON. No markdown, no extra text.
 """,
 )
 
@@ -61,9 +70,9 @@ COURSE CONTEXT:
 Evaluate the student's answer and respond ONLY with this JSON:
 
 {{
-  "score": <integer 0–10>,
+  "score": <integer 0-10>,
   "is_correct": <true or false>,
-  "feedback": "short feedback sentence (1–2 lines)",
+  "feedback": "short feedback sentence (1-2 lines)",
   "correct_answer_restated": "the correct answer in plain language"
 }}
 """,
@@ -82,7 +91,7 @@ CORRECT ANSWER: {correct_answer}
 RELEVANT COURSE PASSAGE:
 {context}
 
-Write a clear, educational explanation (3–5 sentences) that:
+Write a clear, educational explanation (3-5 sentences) that:
 1. States what was wrong and why.
 2. Explains the correct concept using the course material.
 3. Gives a memory tip or analogy to remember it.
