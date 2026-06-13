@@ -1,6 +1,6 @@
 """
 app.py — TEK-UP AI Assistant
-Aurora Glass UI + Claude.ai-style sidebar (clean, no div artifacts)
+Aurora Glass UI + Claude.ai-style sidebar (stable version)
 """
 
 from pathlib import Path
@@ -60,7 +60,6 @@ section[data-testid="stSidebar"] > div {
 }
 section[data-testid="stSidebar"] * { color: #94a3b8 !important; }
 
-/* Sidebar buttons — Claude.ai style */
 section[data-testid="stSidebar"] .stButton > button {
     background: transparent !important;
     border: none !important;
@@ -73,9 +72,6 @@ section[data-testid="stSidebar"] .stButton > button {
     text-align: left !important;
     padding: 0 12px !important;
     transition: all 0.15s !important;
-    justify-content: flex-start !important;
-    display: flex !important;
-    align-items: center !important;
 }
 section[data-testid="stSidebar"] .stButton > button:hover {
     background: rgba(255,255,255,0.06) !important;
@@ -255,7 +251,6 @@ for k, v in defaults.items():
 # ═════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
 
-    # ── Logo ──────────────────────────────────────────────────────────────────
     st.markdown("""
     <div style="padding:18px 16px 10px; display:flex; align-items:center; gap:10px;">
         <div style="width:32px;height:32px;border-radius:9px;
@@ -272,7 +267,6 @@ with st.sidebar:
     <div style="height:0.5px;background:rgba(255,255,255,0.06);margin:0 16px 8px;"></div>
     """, unsafe_allow_html=True)
 
-    # ── New conversation ───────────────────────────────────────────────────────
     if st.button("＋  New conversation", key="btn_new", use_container_width=True):
         st.session_state.messages       = []
         st.session_state.quiz_active    = False
@@ -284,7 +278,6 @@ with st.sidebar:
 
     st.markdown('<div style="height:4px;"></div>', unsafe_allow_html=True)
 
-    # ── Student profile ────────────────────────────────────────────────────────
     name     = st.session_state.student_name or "Student"
     initials = "".join(w[0].upper() for w in name.split()[:2]) or "S"
     st.markdown(f"""
@@ -297,7 +290,6 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Navigation ────────────────────────────────────────────────────────────
     if st.button("📊  My Results", key="nav_results", use_container_width=True):
         st.session_state.sidebar_view = "results"
         st.rerun()
@@ -305,7 +297,6 @@ with st.sidebar:
         st.session_state.sidebar_view = "rules"
         st.rerun()
 
-    # ── Fields ────────────────────────────────────────────────────────────────
     st.markdown("""
     <div style="padding:12px 16px 4px;font-size:10px;font-weight:600;
         color:rgba(148,163,184,0.35)!important;text-transform:uppercase;letter-spacing:0.8px;">
@@ -324,7 +315,6 @@ with st.sidebar:
             st.session_state.active_field = field_key
             st.rerun()
 
-    # ── Recent exams ──────────────────────────────────────────────────────────
     hist = get_history(st.session_state.student_name)
     if hist:
         st.markdown("""
@@ -351,7 +341,6 @@ with st.sidebar:
 
     st.markdown('<div style="flex:1;"></div>', unsafe_allow_html=True)
 
-    # ── Bottom: name input + remove course ────────────────────────────────────
     st.markdown('<div style="border-top:0.5px solid rgba(255,255,255,0.05);padding:10px 12px 14px;">', unsafe_allow_html=True)
     st.session_state.student_name = st.text_input(
         "Your name", value=st.session_state.student_name,
@@ -366,6 +355,14 @@ with st.sidebar:
 # ═════════════════════════════════════════════════════════════════════════════
 # HELPERS
 # ═════════════════════════════════════════════════════════════════════════════
+import re as _re
+
+def _clean_text(text: str) -> str:
+    """Strip any HTML tags from LLM-generated text."""
+    t = _re.sub(r'<[^>]+>', '', str(text))
+    return _re.sub(r'\s+', ' ', t).strip()
+
+
 def _detect_lang(text: str) -> str:
     fr = ["sur","le","la","les","des","une","moi","mon","je","tu","nous","vous",
           "est","sont","avec","pour","dans","que","qui","génère","donne","fais",
@@ -376,7 +373,24 @@ def _detect_lang(text: str) -> str:
 
 def _extract_num_questions(msg: str) -> int:
     import re
-    for pattern in [r'(\d+)\s*questions?', r'(\d+)\s*q\b', r'(\d+)\s*mcq', r'(\d+)\s*qcm']:
+    priority_patterns = [
+        r'number\s+of\s+questions\s*[:=]\s*(\d+)',
+        r'generate\s+(\d+)\s+questions?',
+        r'(\d+)\s+questions?\s+(?:quiz|exam|test|mock|practice)',
+        r'(?:quiz|exam|test|mock|practice)\s+(?:of|with)?\s*(\d+)\s+questions?',
+        r'questions?\s*:\s*(\d+)',
+        r'total\s+(?:of\s+)?(\d+)\s+questions?',
+    ]
+    for pattern in priority_patterns:
+        m = re.search(pattern, msg, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+    matches = re.findall(r'(\d+)\s+questions?', msg, re.IGNORECASE)
+    if matches:
+        valid = [int(x) for x in matches if int(x) > 2]
+        if valid:
+            return valid[0]
+    for pattern in [r'(\d+)\s*q\b', r'(\d+)\s*mcq', r'(\d+)\s*qcm']:
         m = re.search(pattern, msg, re.IGNORECASE)
         if m: return int(m.group(1))
     return 5
@@ -528,14 +542,15 @@ def _submit_quiz() -> None:
     correct = wrong = 0
     for i, question in enumerate(questions):
         ans = st.session_state.quiz_answers.get(f"q_{i}", "")
-        if st.session_state.vectorstore:
-            res = evaluate_answer(question, ans, st.session_state.vectorstore)
-        else:
-            ca  = question.get("correct_answer", "")
-            ok  = ans.strip().lower() == ca.strip().lower()
-            res = {"score": 10 if ok else 0, "is_correct": ok,
-                   "feedback": "Correct!" if ok else f"Correct: {ca}",
-                   "explanation": question.get("explanation", "")}
+        # ✅ Never call LLM for MCQ evaluation — use stored correct_answer directly
+        ca  = _clean_text(question.get("correct_answer", ""))
+        ok  = _clean_text(ans).strip().lower() == ca.strip().lower()
+        res = {
+            "score":       10 if ok else 0,
+            "is_correct":  ok,
+            "feedback":    "Correct!" if ok else f"Correct answer: {ca}",
+            "explanation": question.get("explanation", ""),
+        }
         res.update({"question": question.get("question",""),
                     "correct_answer": question.get("correct_answer",""),
                     "student_answer": ans})
@@ -574,10 +589,14 @@ def _submit_quiz() -> None:
 
     for i, r in enumerate(results):
         ok = r.get("is_correct", False)
-        md += f"{'✅' if ok else '❌'} **Q{i+1}.** {r['question']}\n\n"
-        md += f"> Your answer: `{r['student_answer'] or '(no answer)'}`\n\n"
-        if not ok: md += f"> ✅ Correct: **{r['correct_answer']}**\n\n"
-        if r.get("explanation"): md += f"> 💡 {r['explanation']}\n\n"
+        q_text = _clean_text(r.get("question",""))
+        a_text = _clean_text(r.get("student_answer","") or "(no answer)")
+        c_text = _clean_text(r.get("correct_answer",""))
+        e_text = _clean_text(r.get("explanation",""))
+        md += f"{'✅' if ok else '❌'} **Q{i+1}.** {q_text}\n\n"
+        md += f"> Your answer: `{a_text}`\n\n"
+        if not ok: md += f"> ✅ Correct: **{c_text}**\n\n"
+        if e_text: md += f"> 💡 {e_text}\n\n"
         md += "---\n\n"
 
     md += "_Ask me anything to continue preparing!_"
@@ -601,22 +620,29 @@ st.markdown("""
 
 view = st.session_state.sidebar_view
 
-# ── VIEW: Field detail ────────────────────────────────────────────────────────
+# ── Back to Home helper ───────────────────────────────────────────────────────
+def _back_btn(key: str):
+    if st.button("← Back to Home", key=key):
+        st.session_state.sidebar_view = "home"
+        st.rerun()
+
+# ── VIEW: Field ───────────────────────────────────────────────────────────────
 if view.startswith("field_"):
     field_key  = view.replace("field_", "")
     field_info = FIELDS.get(field_key, FIELDS["cloud"])
     courses    = get_courses_by_field(st.session_state.student_name, field_key)
     hist_field = get_history(st.session_state.student_name, field=field_key)
 
+    _back_btn("back_field")
     st.markdown(f"""
-    <div style="padding:32px 40px 0;">
+    <div style="padding:12px 40px 0;">
         <div style="font-size:26px;margin-bottom:6px;">{field_info['icon']}</div>
         <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;
             background:linear-gradient(90deg,#f1f5f9,#c7d2fe);
             -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px;">
             {field_info['label']}
         </div>
-        <div style="color:#475569;font-size:13px;margin-bottom:24px;">
+        <div style="color:#475569;font-size:13px;margin-bottom:20px;">
             {len(courses)} course(s) · {len(hist_field)} exam(s)
         </div>
     </div>
@@ -647,9 +673,12 @@ if view.startswith("field_"):
                 No courses yet — upload a PDF from the chat.
             </div>
             """, unsafe_allow_html=True)
-
         st.markdown("#### 🏆 Target Certifications")
-        certs_html = "".join(f'<span style="display:inline-block;background:rgba(99,102,241,0.1);border:0.5px solid rgba(99,102,241,0.25);border-radius:20px;padding:4px 12px;margin:3px 4px 3px 0;font-size:12px;color:#818cf8;">{cert}</span>' for cert in field_info["certifications"])
+        certs_html = "".join(
+            f'<span style="display:inline-block;background:rgba(99,102,241,0.1);border:0.5px solid rgba(99,102,241,0.25);'
+            f'border-radius:20px;padding:4px 12px;margin:3px 4px 3px 0;font-size:12px;color:#818cf8;">{cert}</span>'
+            for cert in field_info["certifications"]
+        )
         st.markdown(f'<div style="margin-bottom:16px;">{certs_html}</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -673,10 +702,11 @@ if view.startswith("field_"):
         else:
             st.markdown('<div style="color:#334155;font-size:13px;">No exams yet.</div>', unsafe_allow_html=True)
 
-# ── VIEW: Certification Rules ─────────────────────────────────────────────────
+# ── VIEW: Rules ───────────────────────────────────────────────────────────────
 elif view == "rules":
+    _back_btn("back_rules")
     st.markdown("""
-    <div style="padding:32px 40px 16px;max-width:760px;">
+    <div style="padding:12px 40px 16px;max-width:760px;">
         <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;
             background:linear-gradient(90deg,#f1f5f9,#c7d2fe);
             -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px;">
@@ -685,7 +715,6 @@ elif view == "rules":
         <div style="color:#475569;font-size:13px;margin-bottom:24px;">TEK-UP University — Official requirements</div>
     </div>
     """, unsafe_allow_html=True)
-
     for icon, title, desc in [
         ("🎯", "Minimum Pass Score",    "75% or above to earn certification credit"),
         ("🔁", "Retake Policy",         "Up to 3 attempts per domain per semester"),
@@ -708,7 +737,6 @@ elif view == "rules":
             </div>
         </div>
         """, unsafe_allow_html=True)
-
     st.markdown("""
     <div style="padding:20px 40px 0;">
         <div style="background:rgba(99,102,241,0.07);border:0.5px solid rgba(99,102,241,0.18);
@@ -727,11 +755,11 @@ elif view == "rules":
 
 # ── VIEW: Results ─────────────────────────────────────────────────────────────
 elif view == "results":
+    _back_btn("back_results_view")
     hist_all = get_history(st.session_state.student_name)
     stats    = get_student_stats(st.session_state.student_name)
-
     st.markdown("""
-    <div style="padding:32px 40px 16px;">
+    <div style="padding:12px 40px 16px;">
         <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;
             background:linear-gradient(90deg,#f1f5f9,#c7d2fe);
             -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
@@ -739,7 +767,6 @@ elif view == "results":
         </div>
     </div>
     """, unsafe_allow_html=True)
-
     if stats:
         cols = st.columns(len(stats))
         for i, (fk, s) in enumerate(stats.items()):
@@ -755,7 +782,6 @@ elif view == "results":
                     <div style="font-size:10px;color:#334155;">{s['exams']} exams · best {s['best']}%</div>
                 </div>
                 """, unsafe_allow_html=True)
-
     st.markdown('<div style="padding:20px 40px 0;">', unsafe_allow_html=True)
     st.markdown("#### All Exams")
     if hist_all:
@@ -782,7 +808,7 @@ elif view == "results":
         st.markdown('<div style="color:#334155;font-size:13px;">No exams yet.</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ── VIEW: Chat (home) ─────────────────────────────────────────────────────────
+# ── VIEW: Chat ────────────────────────────────────────────────────────────────
 else:
     st.markdown('<div class="chat-area">', unsafe_allow_html=True)
 
@@ -795,7 +821,8 @@ else:
                 display:flex;align-items:center;gap:8px;">
                 <span style="font-size:16px;">{fi['icon']}</span>
                 <div style="flex:1;">
-                    <div style="color:#34d399;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Course loaded</div>
+                    <div style="color:#34d399;font-size:10px;font-weight:600;
+                        text-transform:uppercase;letter-spacing:0.5px;">Course loaded</div>
                     <div style="color:#6ee7b7;font-size:12px;">{st.session_state.course_name}</div>
                 </div>
                 <div style="color:#475569;font-size:11px;">{fi['label']}</div>
@@ -880,11 +907,12 @@ else:
             </div>
             """, unsafe_allow_html=True)
 
+            q_text = _clean_text(q.get("question", ""))
             st.markdown(f"""
             <div class="quiz-card">
                 <div style="color:rgba(99,102,241,0.65);font-size:10px;text-transform:uppercase;
                     letter-spacing:0.8px;margin-bottom:8px;font-weight:600;">Question {idx+1}</div>
-                <div style="color:#f1f5f9;font-size:13.5px;font-weight:500;line-height:1.7;">{q.get("question","")}</div>
+                <div style="color:#f1f5f9;font-size:13.5px;font-weight:500;line-height:1.7;">{q_text}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -894,7 +922,8 @@ else:
             if "options" in q and q["options"]:
                 for i, opt in enumerate(q["options"]):
                     letter = ["A","B","C","D","E"][i] if i < 5 else str(i+1)
-                    if st.button(f"{letter}.   {opt}", key=f"qo_{idx}_{i}",
+                    clean_opt = _clean_text(opt)
+                    if st.button(f"{letter}.   {clean_opt}", key=f"qo_{idx}_{i}",
                                  use_container_width=True,
                                  type="primary" if current == opt else "secondary"):
                         st.session_state.quiz_answers[ans_key] = opt; st.rerun()
@@ -910,7 +939,8 @@ else:
                         st.session_state.quiz_answers[ans_key] = "False"; st.rerun()
 
             if current:
-                st.markdown(f'<div style="color:rgba(99,102,241,0.65);font-size:11px;margin-top:5px;">Selected: <b style="color:#818cf8;">{current}</b></div>',
+                st.markdown(f'<div style="color:rgba(99,102,241,0.65);font-size:11px;margin-top:5px;">'
+                            f'Selected: <b style="color:#818cf8;">{_clean_text(current)}</b></div>',
                             unsafe_allow_html=True)
 
             cp, cn = st.columns([1, 2])

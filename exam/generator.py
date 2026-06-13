@@ -1,6 +1,6 @@
 """
 exam/generator.py
-Question Generator — batch-based, no question limit, optimized for Groq free tier.
+Question Generator — batch-based, no question limit, topic-diverse, no repeated questions.
 """
 import json
 import re
@@ -22,20 +22,34 @@ DIFFICULTY_LABELS = {
 
 QUESTION_TYPES = ["MCQ", "True/False", "Open"]
 
-QUERY_TEMPLATES = [
-    "technical concepts services features {domain}",
-    "key services use cases {domain}",
-    "security networking storage compute {domain}",
-    "definitions best practices {domain}",
-    "core services features {domain}",
-    "advanced configuration deployment {domain}",
-    "monitoring logging troubleshooting {domain}",
-    "pricing models cost optimization {domain}",
-    "integration authentication authorization {domain}",
-    "architecture patterns scalability {domain}",
+TOPIC_QUERIES = [
+    "SaaS PaaS IaaS cloud service models definitions",
+    "EC2 instance types pricing on-demand reserved spot",
+    "S3 storage classes lifecycle policies versioning",
+    "IAM users groups roles policies permissions MFA",
+    "VPC subnets security groups NACL routing",
+    "RDS Aurora DynamoDB database managed service",
+    "Lambda serverless functions event-driven computing",
+    "CloudFront CDN edge locations distribution",
+    "Route 53 DNS routing policies failover",
+    "CloudWatch monitoring metrics alarms logs",
+    "Elastic Load Balancer ALB NLB auto scaling groups",
+    "CloudFormation Elastic Beanstalk CodeDeploy infrastructure",
+    "shared responsibility model security compliance",
+    "pricing calculator total cost of ownership TCO",
+    "support plans basic developer business enterprise",
+    "Well-Architected Framework pillars reliability performance",
+    "Global Infrastructure regions availability zones edge",
+    "Trusted Advisor Cost Explorer billing budgets",
+    "migration strategies lift and shift replatform",
+    "CloudTrail Config GuardDuty Shield WAF security",
+    "SNS SQS EventBridge messaging decoupling",
+    "ECS EKS containers Docker Kubernetes",
+    "Glacier backup disaster recovery storage",
+    "Direct Connect VPN hybrid cloud networking",
+    "Organizations accounts consolidated billing",
 ]
 
-# Max questions per single LLM call — keeps response within token limits
 BATCH_SIZE = 5
 
 
@@ -48,43 +62,55 @@ def generate_questions(
     asked_questions: List[str] = None,
 ) -> List[dict]:
     """
-    Generate exactly `num_questions` questions with no upper limit.
-    Internally splits into batches of BATCH_SIZE to stay within Groq token limits.
+    Generate exactly `num_questions` questions.
+    Each batch uses a DIFFERENT topic — guaranteed variety, no repeats.
     """
     asked_questions = asked_questions or []
     all_questions: List[dict] = []
-    already_seen: List[str] = list(asked_questions)  # track across batches
-    max_retries = 3  # max retries per batch before giving up
+    already_seen: List[str]   = list(asked_questions)
 
-    remaining = num_questions
+    # Build a shuffled topic rotation — enough topics for all batches
+    num_batches = (num_questions + BATCH_SIZE - 1) // BATCH_SIZE
+    # Repeat topic list if we need more batches than topics
+    topic_pool = TOPIC_QUERIES.copy()
+    random.shuffle(topic_pool)
+    while len(topic_pool) < num_batches:
+        extra = TOPIC_QUERIES.copy()
+        random.shuffle(extra)
+        topic_pool.extend(extra)
 
-    while remaining > 0:
+    topic_idx  = 0
+    remaining  = num_questions
+    max_empty  = 5   # stop after 5 consecutive empty batches
+
+    consecutive_empty = 0
+
+    while remaining > 0 and consecutive_empty < max_empty:
         batch_size = min(BATCH_SIZE, remaining)
+        topic      = topic_pool[topic_idx % len(topic_pool)]
+        topic_idx += 1
 
-        batch = None
-        for attempt in range(max_retries):
-            batch = _generate_batch(
-                vectorstore   = vectorstore,
-                domain        = domain,
-                num_questions = batch_size,
-                difficulty    = difficulty,
-                question_type = question_type,
-                asked_questions = already_seen,
-            )
-            if batch:
-                break
-            # On failure, slightly vary temperature via a new LLM call in _generate_batch
+        batch = _generate_batch(
+            vectorstore     = vectorstore,
+            domain          = domain,
+            num_questions   = batch_size,
+            difficulty      = difficulty,
+            question_type   = question_type,
+            asked_questions = already_seen,
+            topic_query     = topic,
+        )
 
         if not batch:
-            # Could not generate this batch after retries — stop gracefully
-            break
+            consecutive_empty += 1
+            continue
 
+        consecutive_empty = 0
         all_questions.extend(batch)
-        # Add new questions to exclusion list for next batch
         already_seen.extend(q["question"] for q in batch)
+        # ✅ FIX: subtract actual generated count, not requested batch_size
         remaining -= len(batch)
 
-    return all_questions
+    return all_questions[:num_questions]
 
 
 def _generate_batch(
@@ -94,37 +120,30 @@ def _generate_batch(
     difficulty: int,
     question_type: str,
     asked_questions: List[str],
+    topic_query: str = "",
 ) -> List[dict]:
-    """
-    Single LLM call for a small batch (≤ BATCH_SIZE questions).
-    Uses a different random query template each time for variety.
-    """
+    """Single LLM call for a small batch using a specific topic."""
     difficulty_label = DIFFICULTY_LABELS.get(difficulty, "beginner")
 
-    # Rotate query template for variety across batches
-    query = random.choice(QUERY_TEMPLATES).format(
-        domain=domain, difficulty=difficulty_label
-    )
+    query = topic_query or f"certification concepts {domain}"
 
-    docs = retrieve_context(query, vectorstore, top_k=4, domain_filter=domain)
+    docs = retrieve_context(query, vectorstore, top_k=5, domain_filter=domain)
     if not docs:
-        docs = retrieve_context(query, vectorstore, top_k=4)
+        docs = retrieve_context(query, vectorstore, top_k=5)
 
     random.shuffle(docs)
+    context = _build_compact_context(docs, max_chars=3000)
 
-    # Compact context — 2000 chars is enough for 5 questions
-    context = _build_compact_context(docs, max_chars=2000)
-
-    # Exclusion hint — only last 20 to keep prompt lean
     exclusion_hint = ""
     if asked_questions:
-        sample = asked_questions[-20:]
+        sample = asked_questions[-30:]
         exclusion_hint = (
-            "\n\nDo NOT repeat these questions:\n"
+            "\n\nCRITICAL — Do NOT generate questions similar to these already asked:\n"
             + "\n".join(f"- {q}" for q in sample)
+            + "\n\nEach question MUST cover a DIFFERENT concept from the ones above."
         )
 
-    llm = get_llm(temperature=round(random.uniform(0.6, 0.9), 2))
+    llm = get_llm(temperature=round(random.uniform(0.7, 0.95), 2))
 
     prompt = QUESTION_GENERATOR_PROMPT.format(
         context       = context + exclusion_hint,
@@ -135,8 +154,8 @@ def _generate_batch(
     )
 
     try:
-        response = llm.invoke(prompt)
-        raw = response.content if hasattr(response, "content") else str(response)
+        response  = llm.invoke(prompt)
+        raw       = response.content if hasattr(response, "content") else str(response)
         questions = _parse_questions(raw)
         questions = [_normalize_question(q) for q in questions]
         questions = _filter_duplicates(questions, asked_questions)
@@ -148,15 +167,14 @@ def _generate_batch(
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
-def _build_compact_context(docs, max_chars: int = 2000) -> str:
-    """Build a compact context string, trimming each chunk to save tokens."""
+def _build_compact_context(docs, max_chars: int = 3000) -> str:
     parts = []
     total = 0
     for i, doc in enumerate(docs, 1):
         source  = doc.metadata.get("source_file", "unknown")
         content = doc.page_content.strip()
-        if len(content) > 500:
-            content = content[:500] + "..."
+        if len(content) > 700:
+            content = content[:700] + "..."
         entry = f"[Source {i} — {source}]\n{content}"
         if total + len(entry) > max_chars:
             break
@@ -166,6 +184,7 @@ def _build_compact_context(docs, max_chars: int = 2000) -> str:
 
 
 def _filter_duplicates(questions: List[dict], asked: List[str]) -> List[dict]:
+    """Remove questions too similar to already-asked ones."""
     if not asked:
         return questions
     asked_lower = [q.lower().strip() for q in asked]
@@ -173,29 +192,58 @@ def _filter_duplicates(questions: List[dict], asked: List[str]) -> List[dict]:
     for q in questions:
         q_text = q.get("question", "").lower().strip()
         is_dup = any(
-            q_text == a or (len(q_text) > 20 and (q_text in a or a in q_text))
+            q_text == a
+            or (len(q_text) > 15 and (q_text in a or a in q_text))
+            or _similarity(q_text, a) > 0.75
             for a in asked_lower
         )
         if not is_dup:
             filtered.append(q)
+    # If ALL filtered out, return originals to avoid infinite loops
     return filtered if filtered else questions
 
 
+def _similarity(a: str, b: str) -> float:
+    """Simple word overlap similarity."""
+    words_a = set(a.split())
+    words_b = set(b.split())
+    if not words_a or not words_b:
+        return 0.0
+    return len(words_a & words_b) / max(len(words_a), len(words_b))
+
+
+def _strip_html(text: str) -> str:
+    """Remove any HTML tags the LLM accidentally injected."""
+    import re as _re
+    clean = _re.sub(r'<[^>]+>', '', str(text))
+    return _re.sub(r'\s+', ' ', clean).strip()
+
+
 def _normalize_question(q: dict) -> dict:
+    if "question" in q:
+        q["question"] = _strip_html(q["question"])
+    if "correct_answer" in q:
+        q["correct_answer"] = _strip_html(q["correct_answer"])
+    if "explanation" in q:
+        q["explanation"] = _strip_html(q["explanation"])
+
     if "choices" in q and "options" not in q:
         choices = q["choices"]
         if isinstance(choices, dict):
-            q["options"] = list(choices.values())
+            q["options"] = [_strip_html(v) for v in choices.values()]
             correct = q.get("correct_answer", "")
             if correct in choices:
-                q["correct_answer"] = choices[correct]
+                q["correct_answer"] = _strip_html(choices[correct])
         del q["choices"]
     elif "options" in q and isinstance(q["options"], dict):
         choices = q["options"]
-        q["options"] = list(choices.values())
+        q["options"] = [_strip_html(v) for v in choices.values()]
         correct = q.get("correct_answer", "")
         if correct in choices:
-            q["correct_answer"] = choices[correct]
+            q["correct_answer"] = _strip_html(choices[correct])
+    elif "options" in q and isinstance(q["options"], list):
+        q["options"] = [_strip_html(o) for o in q["options"]]
+
     if q.get("type") == "True/False" and "options" not in q:
         q["options"] = ["True", "False"]
     return q
